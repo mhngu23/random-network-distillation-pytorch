@@ -6,6 +6,8 @@ from torch.multiprocessing import Pipe
 
 from tensorboardX import SummaryWriter
 
+from minigrid.wrappers import ImgObsWrapper
+
 import numpy as np
 
 
@@ -15,21 +17,23 @@ def main():
     env_id = default_config['EnvID']
     env_type = default_config['EnvType']
 
-    if env_type == 'mario':
-        env = BinarySpaceToDiscreteSpaceEnv(gym_super_mario_bros.make(env_id), COMPLEX_MOVEMENT)
-    elif env_type == 'atari':
+    if env_type == 'atari':
         env = gym.make(env_id)
+    elif env_type == 'minigrid':
+        env = ImgObsWrapper(BlockedUnlockPickUpEnv_v0(render_mode = "rgb_array"))
+        # env = ImgObsWrapper(env_id(render_mode = "rgb_array"))
     else:
         raise NotImplementedError
-    input_size = env.observation_space.shape  # 4
-    output_size = env.action_space.n  # 2
+
+    input_size = env.observation_space.shape  # 7,7,3
+    output_size = env.action_space.n  # 7
 
     if 'Breakout' in env_id:
         output_size -= 1
 
     env.close()
 
-    is_load_model = True
+    is_load_model = False
     is_render = False
     model_path = 'models/{}.model'.format(env_id)
     predictor_path = 'models/{}.pred'.format(env_id)
@@ -43,9 +47,8 @@ def main():
 
     lam = float(default_config['Lambda'])
     num_worker = int(default_config['NumEnv'])
-
+    # num_worker = 2
     num_step = int(default_config['NumStep'])
-
     ppo_eps = float(default_config['PPOEps'])
     epoch = int(default_config['Epoch'])
     mini_batch = int(default_config['MiniBatch'])
@@ -68,11 +71,11 @@ def main():
     discounted_reward = RewardForwardFilter(int_gamma)
 
     agent = RNDAgent
-
+    
     if default_config['EnvType'] == 'atari':
         env_type = AtariEnvironment
-    elif default_config['EnvType'] == 'mario':
-        env_type = MarioEnvironment
+    elif default_config['EnvType'] == 'minigrid':
+        env_type = MinigridEnvironment
     else:
         raise NotImplementedError
 
@@ -111,8 +114,7 @@ def main():
     child_conns = []
     for idx in range(num_worker):
         parent_conn, child_conn = Pipe()
-        work = env_type(env_id, is_render, idx, child_conn, sticky_action=sticky_action, p=action_prob,
-                        life_done=life_done)
+        work = env_type(env_id, is_render, idx, child_conn, sticky_action=sticky_action, p=action_prob, life_done=life_done)
         work.start()
         works.append(work)
         parent_conns.append(parent_conn)

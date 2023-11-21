@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import gym
 import cv2
 
@@ -7,9 +9,16 @@ from abc import abstractmethod
 from collections import deque
 from copy import copy
 
-import gym_super_mario_bros
-from nes_py.wrappers import BinarySpaceToDiscreteSpaceEnv
-from gym_super_mario_bros.actions import SIMPLE_MOVEMENT, COMPLEX_MOVEMENT
+from minigrid.wrappers import ImgObsWrapper, PositionBonus, ActionBonus
+
+from minigrid.core.constants import COLOR_NAMES
+from minigrid.core.mission import MissionSpace
+from minigrid.core.roomgrid import RoomGrid
+from minigrid.core.world_object import Ball
+
+# import gym_super_mario_bros
+# from nes_py.wrappers import BinarySpaceToDiscreteSpaceEnv
+# from gym_super_mario_bros.actions import SIMPLE_MOVEMENT, COMPLEX_MOVEMENT
 
 from torch.multiprocessing import Pipe, Process
 
@@ -49,6 +58,160 @@ def unwrap(env):
     else:
         return env
 
+class BlockedUnlockPickUpEnv_v0(RoomGrid):
+    def __init__(self, max_steps: int | None = None, **kwargs):
+        mission_space = MissionSpace(
+            mission_func=self._gen_mission,
+            ordered_placeholders=[COLOR_NAMES, ["box", "key"]],
+        )
+
+        room_size = 4
+        if max_steps is None:
+            max_steps = 16 * room_size**2
+
+        super().__init__(
+            mission_space=mission_space,
+            num_rows=1,
+            num_cols=2,
+            room_size=room_size,
+            max_steps=max_steps,
+            **kwargs,
+        )
+
+    @staticmethod
+    def _gen_mission(color: str, obj_type: str):
+        return f"pick up the {color} {obj_type}"
+
+    def _gen_grid(self, width, height):
+        super()._gen_grid(width, height)
+
+        # Add a box to the room on the right
+        obj, _ = self.add_object(1, 0, kind="box", color="blue")
+        
+        # Make sure the two rooms are directly connected by a locked door
+        door_1, pos_1 = self.add_door(0, 0, 0, locked=True, color="red")
+
+        # Block the door with a ball
+        color = "blue"
+        self.grid.set(pos_1[0] - 1, pos_1[1], Ball(color))
+
+        # Add a key to unlock the door
+        self.add_object(0, 0, "key", door_1.color)
+
+        # self.add_distractors(0, 0, 1)
+
+        self.place_agent(0, 0)
+
+        self.obj = obj
+        self.mission = f"pick up the {obj.color} {obj.type}"
+
+    def step(self, action):
+        obs, reward, terminated, truncated, info = super().step(action)
+
+        if action == self.actions.pickup:
+            if self.carrying and self.carrying == self.obj:
+                reward = 1
+                terminated = True
+
+        return obs, reward, terminated, truncated, info
+    
+    def get_agent_position(self):
+        return self.agent_pos
+class MinigridEnvironment(Environment):
+    def __init__(self,
+            env_id,
+            is_render,
+            env_idx,
+            child_conn,
+            history_size=4,
+            h=84,
+            w=84,
+            life_done=True,
+            sticky_action=True,
+            p=0.25):
+        super(MinigridEnvironment, self).__init__()
+        self.daemon = True
+        self.env = ImgObsWrapper(BlockedUnlockPickUpEnv_v0())
+        self.env_id = env_id
+        self.is_render = is_render
+        self.env_idx = env_idx
+        self.steps = 0
+        self.episode = 0
+        self.rall = 0
+        self.recent_rlist = deque(maxlen=100)
+        self.child_conn = child_conn
+
+        self.sticky_action = sticky_action
+        self.last_action = 0
+        self.p = p
+
+        self.history_size = history_size
+        self.history = np.zeros([history_size, h, w])
+        self.h = h
+        self.w = w
+
+        self.reset()
+
+    def run(self):
+        super(MinigridEnvironment, self).run()
+        while True:
+            action = self.child_conn.recv()
+
+            if 'Breakout' in self.env_id:
+                action += 1
+
+            # sticky action
+            if self.sticky_action:
+                if np.random.rand() <= self.p:
+                    action = self.last_action
+                self.last_action = action
+
+            s, reward, terminated, truncated, info = self.env.step(action)
+            done = terminated
+
+            # if max_step_per_episode < self.steps:
+                # done = True
+            if terminated or truncated:
+                done = True
+
+            log_reward = reward
+            force_done = done
+
+            self.history[:3, :, :] = self.history[1:, :, :]
+            self.history[3, :, :] = self.pre_proc(s)
+
+            self.rall += reward
+            self.steps += 1
+
+            if done:
+                self.recent_rlist.append(self.rall)
+                print("[Episode {}({})] Step: {}  Reward: {}  Recent Reward: {}  Visited Room: [{}]".format(
+                    self.episode, self.env_idx, self.steps, self.rall, np.mean(self.recent_rlist),
+                    info.get('episode', {}).get('visited_rooms', {})))
+
+                self.history = self.reset()
+
+            self.child_conn.send(
+                [self.history[:, :, :], reward, force_done, done, log_reward])
+
+    def reset(self):
+        self.last_action = 0
+        self.steps = 0
+        self.episode += 1
+        self.rall = 0
+        s = self.env.reset()
+        self.get_init_state(
+            self.pre_proc(s))
+        return self.history[:, :, :]
+
+    def pre_proc(self, X):
+        X = np.array(Image.fromarray(X[0]).convert('L')).astype('float32')
+        x = cv2.resize(X, (self.h, self.w))
+        return x
+
+    def get_init_state(self, s):
+        for i in range(self.history_size):
+            self.history[i, :, :] = self.pre_proc(s)    
 
 class MaxAndSkipEnv(gym.Wrapper):
     def __init__(self, env, is_render, skip=4):
@@ -96,16 +259,16 @@ class MontezumaInfoWrapper(gym.Wrapper):
         return int(ram[self.room_address])
 
     def step(self, action):
-        obs, rew, done, info = self.env.step(action)
+        obs, rew, terminated, truncated, info = self.env.step(action)
         self.visited_rooms.add(self.get_current_room())
 
         if 'episode' not in info:
             info['episode'] = {}
         info['episode'].update(visited_rooms=copy(self.visited_rooms))
 
-        if done:
+        if terminated or truncated:
             self.visited_rooms.clear()
-        return obs, rew, done, info
+        return obs, rew, terminated, truncated, info
 
     def reset(self):
         return self.env.reset()
@@ -163,7 +326,7 @@ class AtariEnvironment(Environment):
                     action = self.last_action
                 self.last_action = action
 
-            s, reward, done, info = self.env.step(action)
+            s, reward, terminated, truncated, info = self.env.step(action)
 
             if max_step_per_episode < self.steps:
                 done = True
@@ -179,9 +342,11 @@ class AtariEnvironment(Environment):
 
             if done:
                 self.recent_rlist.append(self.rall)
-                print("[Episode {}({})] Step: {}  Reward: {}  Recent Reward: {}  Visited Room: [{}]".format(
-                    self.episode, self.env_idx, self.steps, self.rall, np.mean(self.recent_rlist),
-                    info.get('episode', {}).get('visited_rooms', {})))
+                # print("[Episode {}({})] Step: {}  Reward: {}  Recent Reward: {}  Visited Room: [{}]".format(
+                #     self.episode, self.env_idx, self.steps, self.rall, np.mean(self.recent_rlist),
+                #     info.get('episode', {}).get('visited_rooms', {})))
+                
+                print(f"[Episode {self.episode}({self.env_idx})] Step: {self.steps}  Reward: {self.rall}  Recent Reward: {np.mean(self.recent_rlist)}]")
 
                 self.history = self.reset()
 
@@ -199,7 +364,7 @@ class AtariEnvironment(Environment):
         return self.history[:, :, :]
 
     def pre_proc(self, X):
-        X = np.array(Image.fromarray(X).convert('L')).astype('float32')
+        X = np.array(Image.fromarray(X[0]).convert('L')).astype('float32')
         x = cv2.resize(X, (self.h, self.w))
         return x
 
@@ -208,127 +373,128 @@ class AtariEnvironment(Environment):
             self.history[i, :, :] = self.pre_proc(s)
 
 
-class MarioEnvironment(Process):
-    def __init__(
-            self,
-            env_id,
-            is_render,
-            env_idx,
-            child_conn,
-            history_size=4,
-            life_done=False,
-            h=84,
-            w=84, movement=COMPLEX_MOVEMENT, sticky_action=True,
-            p=0.25):
-        super(MarioEnvironment, self).__init__()
-        self.daemon = True
-        self.env = BinarySpaceToDiscreteSpaceEnv(
-            gym_super_mario_bros.make(env_id), COMPLEX_MOVEMENT)
 
-        self.is_render = is_render
-        self.env_idx = env_idx
-        self.steps = 0
-        self.episode = 0
-        self.rall = 0
-        self.recent_rlist = deque(maxlen=100)
-        self.child_conn = child_conn
+# class MarioEnvironment(Process):
+#     def __init__(
+#             self,
+#             env_id,
+#             is_render,
+#             env_idx,
+#             child_conn,
+#             history_size=4,
+#             life_done=False,
+#             h=84,
+#             w=84, movement=COMPLEX_MOVEMENT, sticky_action=True,
+#             p=0.25):
+#         super(MarioEnvironment, self).__init__()
+#         self.daemon = True
+#         self.env = BinarySpaceToDiscreteSpaceEnv(
+#             gym_super_mario_bros.make(env_id), COMPLEX_MOVEMENT)
 
-        self.life_done = life_done
-        self.sticky_action = sticky_action
-        self.last_action = 0
-        self.p = p
+#         self.is_render = is_render
+#         self.env_idx = env_idx
+#         self.steps = 0
+#         self.episode = 0
+#         self.rall = 0
+#         self.recent_rlist = deque(maxlen=100)
+#         self.child_conn = child_conn
 
-        self.history_size = history_size
-        self.history = np.zeros([history_size, h, w])
-        self.h = h
-        self.w = w
+#         self.life_done = life_done
+#         self.sticky_action = sticky_action
+#         self.last_action = 0
+#         self.p = p
 
-        self.reset()
+#         self.history_size = history_size
+#         self.history = np.zeros([history_size, h, w])
+#         self.h = h
+#         self.w = w
 
-    def run(self):
-        super(MarioEnvironment, self).run()
-        while True:
-            action = self.child_conn.recv()
-            if self.is_render:
-                self.env.render()
+#         self.reset()
 
-            # sticky action
-            if self.sticky_action:
-                if np.random.rand() <= self.p:
-                    action = self.last_action
-                self.last_action = action
+#     def run(self):
+#         super(MarioEnvironment, self).run()
+#         while True:
+#             action = self.child_conn.recv()
+#             if self.is_render:
+#                 self.env.render()
 
-            # 4 frame skip
-            reward = 0.0
-            done = None
-            for i in range(4):
-                obs, r, done, info = self.env.step(action)
-                if self.is_render:
-                    self.env.render()
-                reward += r
-                if done:
-                    break
+#             # sticky action
+#             if self.sticky_action:
+#                 if np.random.rand() <= self.p:
+#                     action = self.last_action
+#                 self.last_action = action
 
-            # when Mario loses life, changes the state to the terminal
-            # state.
-            if self.life_done:
-                if self.lives > info['life'] and info['life'] > 0:
-                    force_done = True
-                    self.lives = info['life']
-                else:
-                    force_done = done
-                    self.lives = info['life']
-            else:
-                force_done = done
+#             # 4 frame skip
+#             reward = 0.0
+#             done = None
+#             for i in range(4):
+#                 obs, r, done, info = self.env.step(action)
+#                 if self.is_render:
+#                     self.env.render()
+#                 reward += r
+#                 if done:
+#                     break
 
-            # reward range -15 ~ 15
-            log_reward = reward / 15
-            self.rall += log_reward
+#             # when Mario loses life, changes the state to the terminal
+#             # state.
+#             if self.life_done:
+#                 if self.lives > info['life'] and info['life'] > 0:
+#                     force_done = True
+#                     self.lives = info['life']
+#                 else:
+#                     force_done = done
+#                     self.lives = info['life']
+#             else:
+#                 force_done = done
 
-            r = int(info.get('flag_get', False))
+#             # reward range -15 ~ 15
+#             log_reward = reward / 15
+#             self.rall += log_reward
 
-            self.history[:3, :, :] = self.history[1:, :, :]
-            self.history[3, :, :] = self.pre_proc(obs)
+#             r = int(info.get('flag_get', False))
 
-            self.steps += 1
+#             self.history[:3, :, :] = self.history[1:, :, :]
+#             self.history[3, :, :] = self.pre_proc(obs)
 
-            if done:
-                self.recent_rlist.append(self.rall)
-                print(
-                    "[Episode {}({})] Step: {}  Reward: {}  Recent Reward: {}  Stage: {} current x:{}   max x:{}".format(
-                        self.episode,
-                        self.env_idx,
-                        self.steps,
-                        self.rall,
-                        np.mean(
-                            self.recent_rlist),
-                        info['stage'],
-                        info['x_pos'],
-                        self.max_pos))
+#             self.steps += 1
 
-                self.history = self.reset()
+#             if done:
+#                 self.recent_rlist.append(self.rall)
+#                 print(
+#                     "[Episode {}({})] Step: {}  Reward: {}  Recent Reward: {}  Stage: {} current x:{}   max x:{}".format(
+#                         self.episode,
+#                         self.env_idx,
+#                         self.steps,
+#                         self.rall,
+#                         np.mean(
+#                             self.recent_rlist),
+#                         info['stage'],
+#                         info['x_pos'],
+#                         self.max_pos))
 
-            self.child_conn.send([self.history[:, :, :], r, force_done, done, log_reward])
+#                 self.history = self.reset()
 
-    def reset(self):
-        self.last_action = 0
-        self.steps = 0
-        self.episode += 1
-        self.rall = 0
-        self.lives = 3
-        self.stage = 1
-        self.max_pos = 0
-        self.get_init_state(self.env.reset())
-        return self.history[:, :, :]
+#             self.child_conn.send([self.history[:, :, :], r, force_done, done, log_reward])
 
-    def pre_proc(self, X):
-        # grayscaling
-        x = cv2.cvtColor(X, cv2.COLOR_RGB2GRAY)
-        # resize
-        x = cv2.resize(x, (self.h, self.w))
+#     def reset(self):
+#         self.last_action = 0
+#         self.steps = 0
+#         self.episode += 1
+#         self.rall = 0
+#         self.lives = 3
+#         self.stage = 1
+#         self.max_pos = 0
+#         self.get_init_state(self.env.reset())
+#         return self.history[:, :, :]
 
-        return x
+#     def pre_proc(self, X):
+#         # grayscaling
+#         x = cv2.cvtColor(X, cv2.COLOR_RGB2GRAY)
+#         # resize
+#         x = cv2.resize(x, (self.h, self.w))
 
-    def get_init_state(self, s):
-        for i in range(self.history_size):
-            self.history[i, :, :] = self.pre_proc(s)
+#         return x
+
+#     def get_init_state(self, s):
+#         for i in range(self.history_size):
+#             self.history[i, :, :] = self.pre_proc(s)
