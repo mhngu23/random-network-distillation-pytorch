@@ -2,6 +2,7 @@ from agents import *
 from envs import *
 from utils import *
 from config import *
+from test import *
 from torch.multiprocessing import Pipe
 
 from tensorboardX import SummaryWriter
@@ -47,12 +48,12 @@ def main():
 
     lam = float(default_config['Lambda'])
     num_worker = int(default_config['NumEnv'])
-    # num_worker = 2
     num_step = int(default_config['NumStep'])
     ppo_eps = float(default_config['PPOEps'])
     epoch = int(default_config['Epoch'])
     mini_batch = int(default_config['MiniBatch'])
-    batch_size = int(num_step * num_worker / mini_batch)
+    # batch_size = int(num_step * num_worker / mini_batch)
+    batch_size = 64
     learning_rate = float(default_config['LearningRate'])
     entropy_coef = float(default_config['Entropy'])
     gamma = float(default_config['Gamma'])
@@ -268,6 +269,7 @@ def main():
         # -----------------------------------------------
 
         # Step 5. Training!
+        print("Start training model!")
         agent.train_model(np.float32(total_state) / 255., ext_target, int_target, total_action,
                           total_adv, ((total_next_obs - obs_rms.mean) / np.sqrt(obs_rms.var)).clip(-5, 5),
                           total_policy)
@@ -277,7 +279,14 @@ def main():
             torch.save(agent.model.state_dict(), model_path)
             torch.save(agent.rnd.predictor.state_dict(), predictor_path)
             torch.save(agent.rnd.target.state_dict(), target_path)
-
+        
+        print(sample_episode)
+        if sample_episode % 100 == 0:
+            testing_reward = test(agent, work, env)
+            print(testing_reward)
+            writer.add_scalar('data/mean_testing_reward', testing_reward, sample_episode)
+            exit()
+        
 
 if __name__ == '__main__':
     main()

@@ -21,6 +21,7 @@ def main():
         env = gym.make(env_id)
     else:
         raise NotImplementedError
+    
     input_size = env.observation_space.shape  # 4
     output_size = env.action_space.n  # 2
 
