@@ -150,6 +150,7 @@ def main():
             next_obs = []
     print('End to initalize...')
 
+    temp = 0
     while True:
         total_state, total_reward, total_done, total_next_state, total_action, total_int_reward, total_next_obs, total_ext_values, total_int_values, total_policy, total_policy_np = \
             [], [], [], [], [], [], [], [], [], [], []
@@ -280,12 +281,14 @@ def main():
             torch.save(agent.rnd.predictor.state_dict(), predictor_path)
             torch.save(agent.rnd.target.state_dict(), target_path)
         
-        print(sample_episode)
-        if sample_episode % 100 == 0:
+        print("Sample episode", sample_episode)
+        print("Diff", sample_episode-temp)
+        if sample_episode - temp > 20:
             testing_reward = test(agent, work, env)
             print(testing_reward)
             writer.add_scalar('data/mean_testing_reward', testing_reward, sample_episode)
-            exit()
+            temp = sample_episode
+            # exit()
         
 
 if __name__ == '__main__':

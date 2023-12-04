@@ -8,8 +8,13 @@ def test(agent, work, env):
     all_reward = []
     ob, _ = env.reset()
     while len(all_reward) < 50:
-        ob = work.pre_proc(ob)
-        action, _, _, _ = agent.get_action(ob)
+        history = np.zeros([4, 84, 84])
+        history[:3, :, :] = history[1:, :, :]
+        history[3, :, :] = work.pre_proc(ob)
+        # ob = work.pre_proc(ob)
+        history = np.expand_dims(history, axis=0)
+
+        action, _, _, _ = agent.get_action(history)
         action = int(action)
         next_ob, rew, done, truncated, _ = env.step(action)
 
@@ -19,6 +24,6 @@ def test(agent, work, env):
         else:
             ob = next_ob
     
-    print("Length all reward", len(all_reward))
+    # print("Length all reward", len(all_reward))
     return np.mean(all_reward)
 
