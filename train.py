@@ -176,8 +176,8 @@ def main():
         # Step 1. n-step rollout
         for i in range(num_step):
             actions, value_ext, value_int, policy = agent.get_action(np.float32(states) / 255.)
-            print(np.float32(states) / 255.)
-            print(states.shape)
+            # print(np.float32(states) / 255.)
+            # print(states.shape)
             # exit()
             for parent_conn, action in zip(parent_conns, actions):
                 parent_conn.send(action)
@@ -305,7 +305,6 @@ def main():
                           total_policy)
 
         if global_step % (num_worker * num_step * 100) == 0:
-            # print('Now Global Step :{}'.format(global_step))
             torch.save(agent.model.state_dict(), model_path)
             torch.save(agent.rnd.predictor.state_dict(), predictor_path)
             torch.save(agent.rnd.target.state_dict(), target_path)

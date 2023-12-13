@@ -195,7 +195,10 @@ class MinigridEnvironment(Environment):
             p=0.25):
         super(MinigridEnvironment, self).__init__()
         self.daemon = True
-        self.env = ImgObsWrapper(BlockedUnlockPickUpEnv_v0())
+        if env_id == "BlockedUnlockPickUpEnv_v0":
+            self.env = ImgObsWrapper(BlockedUnlockPickUpEnv_v0())
+        elif env_id == "BlockedUnlockPickUpEnv_v1":
+            self.env = ImgObsWrapper(BlockedUnlockPickUpEnv_v1(max_steps=2000))
         self.env_id = env_id
         self.is_render = is_render
         self.env_idx = env_idx
