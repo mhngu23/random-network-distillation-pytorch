@@ -188,8 +188,8 @@ class MinigridEnvironment(Environment):
             env_idx,
             child_conn,
             history_size=4,
-            h=84,
-            w=84,
+            h=7,
+            w=7,
             life_done=True,
             sticky_action=True,
             p=0.25):
@@ -266,8 +266,15 @@ class MinigridEnvironment(Environment):
         return self.history[:, :, :]
 
     def pre_proc(self, X):
-        X = np.array(Image.fromarray(X[0]).convert('L')).astype('float32')
+        if isinstance(X, tuple):
+        # X = np.array(Image.fromarray(X[0]).convert('L')).astype('float32')
+            X = np.array(Image.fromarray(X[0]).convert('L')).astype('float32')
+        else:
+            X = np.array(Image.fromarray(X).convert('L')).astype('float32')
+
+        # X = np.array((X[0])).astype('float32')
         x = cv2.resize(X, (self.h, self.w))
+        # x = cv2.resize(X, (7, 7))
         return x
 
     def get_init_state(self, s):
