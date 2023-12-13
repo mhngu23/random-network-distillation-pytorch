@@ -23,6 +23,8 @@ def main():
     elif env_type == 'minigrid':
         env = ImgObsWrapper(BlockedUnlockPickUpEnv_v0(render_mode = "rgb_array"))
         # env = ImgObsWrapper(env_id(render_mode = "rgb_array"))
+    elif env_type == "minigrid_1":
+        env = ImgObsWrapper(BlockedUnlockPickUpEnv_v1(render_mode = "rgb_array", max_steps=2000))
     else:
         raise NotImplementedError
 
@@ -73,9 +75,11 @@ def main():
 
     agent = RNDAgent
     
-    if default_config['EnvType'] == 'atari':
-        env_type = AtariEnvironment
-    elif default_config['EnvType'] == 'minigrid':
+    # if default_config['EnvType'] == 'atari':
+        # env_type = AtariEnvironment
+    if default_config['EnvType'] == 'minigrid':
+        env_type = MinigridEnvironment
+    elif default_config['EnvType'] == 'minigrid_1':
         env_type = MinigridEnvironment
     else:
         raise NotImplementedError
@@ -151,16 +155,27 @@ def main():
     print('End to initalize...')
 
     temp = 0
+    step_tracking = 0
     while True:
         total_state, total_reward, total_done, total_next_state, total_action, total_int_reward, total_next_obs, total_ext_values, total_int_values, total_policy, total_policy_np = \
             [], [], [], [], [], [], [], [], [], [], []
         global_step += (num_worker * num_step)
         global_update += 1
+        # single_step += num_step
+        # if global_step - temp > 10000:
+        #     if env_type == "minigrid" or env_type == "minigrid_1":
+        #         testing_reward = test_minigrid(agent, work, env)
+        #         print("This is the global step", global_step)
+        #         print("This is the reward", testing_reward)
+        #         writer.add_scalar('data/mean_testing_reward', testing_reward, global_step)
+        #         temp = global_step
 
         # Step 1. n-step rollout
-        for _ in range(num_step):
+        for i in range(num_step):
             actions, value_ext, value_int, policy = agent.get_action(np.float32(states) / 255.)
-
+            print(np.float32(states) / 255.)
+            print(states.shape)
+            # exit()
             for parent_conn, action in zip(parent_conns, actions):
                 parent_conn.send(action)
 
@@ -210,6 +225,17 @@ def main():
                 sample_rall = 0
                 sample_step = 0
                 sample_i_rall = 0
+                   
+            step_tracking += 1 * num_worker
+            print("This is the step tracking", step_tracking)
+            if step_tracking - temp > 10000:
+                if default_config['EnvType'] == 'minigrid' or default_config['EnvType'] == 'minigrid_1':
+                    testing_reward = test_minigrid(agent, work, env)
+                    print("This is the reward", testing_reward)
+                    writer.add_scalar('data/mean_testing_reward', testing_reward, step_tracking)
+                    temp = step_tracking
+            exit()
+
 
         # calculate last next value
         _, value_ext, value_int, _ = agent.get_action(np.float32(states) / 255.)
@@ -276,18 +302,13 @@ def main():
                           total_policy)
 
         if global_step % (num_worker * num_step * 100) == 0:
-            print('Now Global Step :{}'.format(global_step))
+            # print('Now Global Step :{}'.format(global_step))
             torch.save(agent.model.state_dict(), model_path)
             torch.save(agent.rnd.predictor.state_dict(), predictor_path)
             torch.save(agent.rnd.target.state_dict(), target_path)
         
-        print("Sample episode", sample_episode)
-        print("Diff", sample_episode-temp)
-        if sample_episode - temp > 20:
-            testing_reward = test(agent, work, env)
-            print(testing_reward)
-            writer.add_scalar('data/mean_testing_reward', testing_reward, sample_episode)
-            temp = sample_episode
+        # print("Sample episode", sample_episode)
+        # print("Diff", sample_episode-temp)
             # exit()
         
 
